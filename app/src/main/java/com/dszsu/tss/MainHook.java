@@ -1,8 +1,7 @@
 package com.dszsu.tss;
 
-import android.os.Build;
 import android.view.WindowManager;
-
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
@@ -16,45 +15,56 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "SpeechAssistSecure";
 
-    private static final Map<Object, Object> vriToSurface =
-            new IdentityHashMap<>();
-
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         String pkg = lpparam.packageName;
         if (pkg == null) return;
+        
         if (pkg.startsWith("android") || pkg.startsWith("com.android.systemui")) return;
+
+        XposedBridge.log(TAG + ": Hooking package: " + pkg);
 
         try {
             hookViewRootImpl(lpparam);
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook error in " + pkg + ": " + t);
+            XposedBridge.log(TAG + ": Hook Error for " + pkg + ": " + t);
         }
     }
 
     private void hookViewRootImpl(final XC_LoadPackage.LoadPackageParam lpparam) {
-        Class<?> vriClass =
-                XposedHelpers.findClass("android.view.ViewRootImpl", lpparam.classLoader);
+        final Class<?> vriClass = XposedHelpers.findClass("android.view.ViewRootImpl", lpparam.classLoader);
 
+        
         XposedBridge.hookAllMethods(vriClass, "relayoutWindow", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
+                
                 handleDimming(param.thisObject);
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                
+                handleSecure(param.thisObject, lpparam.classLoader);
             }
         });
 
+        
         XposedBridge.hookAllMethods(vriClass, "performTraversals", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
+                
+                handleDimming(param.thisObject);
                 handleSecure(param.thisObject, lpparam.classLoader);
             }
         });
     }
 
+    
     private void handleDimming(Object vri) {
         try {
-            WindowManager.LayoutParams lp =
-                    (WindowManager.LayoutParams) XposedHelpers.getObjectField(vri, "mWindowAttributes");
+            
+            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) XposedHelpers.getObjectField(vri, "mWindowAttributes");
             if (lp != null && (lp.flags & WindowManager.LayoutParams.FLAG_DIM_BEHIND) != 0) {
                 lp.flags &= ~WindowManager.LayoutParams.FLAG_DIM_BEHIND;
                 lp.dimAmount = 0f;
@@ -62,54 +72,47 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {}
     }
 
-    private void handleSecure(Object vri, ClassLoader cl) {
+    
+    private void handleSecure(Object vri, ClassLoader classLoader) {
         try {
-            Object sc = findValidSurface(vri);
-            if (sc == null) return;
+            Object sc = findSurfaceControl(vri);
+            if (sc == null || !(boolean)XposedHelpers.callMethod(sc, "isValid")) return;
 
-            synchronized (vriToSurface) {
-                Object last = vriToSurface.get(vri);
-                if (last == sc) return;
-                vriToSurface.put(vri, sc);
-            }
-
-            Class<?> txnClass =
-                    XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl);
+            
+            Class<?> txnClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction", classLoader);
             Object txn = XposedHelpers.newInstance(txnClass);
 
-            boolean applied = false;
-
+            
             try {
+                
                 XposedHelpers.callMethod(txn, "setSkipScreenshot", sc, true);
-                applied = true;
-            } catch (Throwable ignored) {}
-
-            if (!applied && Build.VERSION.SDK_INT < 33) {
+            } catch (Throwable t1) {
                 try {
-                    XposedHelpers.callMethod(txn, "setSecure", sc, true);
-                } catch (Throwable ignored) {}
+                    
+                    XposedHelpers.callMethod(txn, "setSkipScreenshot", true);
+                } catch (Throwable t2) {
+                    try {
+                        
+                        XposedHelpers.callMethod(txn, "setSecure", sc, true);
+                    } catch (Throwable ignored) {}
+                }
             }
 
+            
             XposedHelpers.callMethod(txn, "apply");
 
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            
+        }
     }
 
-    private Object findValidSurface(Object vri) {
-        String[] fields = {
-                "mSurfaceControl",
-                "mLeash",
-                "mSurfaceControlLocked",
-                "mSurface"
-        };
-
-        for (String f : fields) {
+    
+    private Object findSurfaceControl(Object vri) {
+        String[] fields = {"mSurfaceControl", "mLeash", "mSurfaceControlLocked", "mSurface"};
+        for (String field : fields) {
             try {
-                Object sc = XposedHelpers.getObjectField(vri, f);
-                if (sc != null &&
-                        (boolean) XposedHelpers.callMethod(sc, "isValid")) {
-                    return sc;
-                }
+                Object sc = XposedHelpers.getObjectField(vri, field);
+                if (sc != null) return sc;
             } catch (Throwable ignored) {}
         }
         return null;
