@@ -2,7 +2,7 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        // 删除了不完整的 maven { url 'https: 行
+        maven { url 'https://jitpack.io' }
     }
 }
 
@@ -12,4 +12,5 @@ plugins {
 
 task clean(type: Delete) {
     delete rootProject.buildDir
+
 }
