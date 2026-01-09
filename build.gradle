@@ -2,7 +2,7 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven { url 'https:
+        // 删除了不完整的 maven { url 'https: 行
     }
 }
 
@@ -12,6 +12,4 @@ plugins {
 
 task clean(type: Delete) {
     delete rootProject.buildDir
-
 }
-
