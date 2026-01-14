@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="scope">
+        <item>system</item>
+        <item>com.oplus.screenshot</item>
+        <item>com.oplus.appplatform</item>
+        <item>com.zmzx.college.search</item>
+        <item>com.quark.browser</item>
+        <item>com.kuaiduizuoye.scan</item>
+        <item>com.coloros.smartsidebar</item>
+    </string-array>
+</resources>
