@@ -1,12 +1,13 @@
 package com.dszsu.tss;
 
 import android.os.Build;
+import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
+import java.lang.ref.WeakReference;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.Map;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -16,16 +17,67 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
+    
+    // 弱引用映射，防止内存泄漏
+    private static class WeakIdentityMap<K, V> {
+        private final Map<WeakReference<K>, V> map = new IdentityHashMap<>();
+        
+        public V get(K key) {
+            cleanUp();
+            for (Map.Entry<WeakReference<K>, V> entry : map.entrySet()) {
+                K k = entry.getKey().get();
+                if (k == key) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
+        
+        public void put(K key, V value) {
+            cleanUp();
+            map.put(new WeakReference<>(key), value);
+        }
+        
+        public boolean containsKey(K key) {
+            cleanUp();
+            for (Map.Entry<WeakReference<K>, V> entry : map.entrySet()) {
+                K k = entry.getKey().get();
+                if (k == key) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        public void remove(K key) {
+            cleanUp();
+            Iterator<Map.Entry<WeakReference<K>, V>> iterator = map.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<WeakReference<K>, V> entry = iterator.next();
+                K k = entry.getKey().get();
+                if (k == key) {
+                    iterator.remove();
+                    break;
+                }
+            }
+        }
+        
+        private void cleanUp() {
+            Iterator<Map.Entry<WeakReference<K>, V>> iterator = map.entrySet().iterator();
+            while (iterator.hasNext()) {
+                WeakReference<K> ref = iterator.next().getKey();
+                if (ref.get() == null) {
+                    iterator.remove();
+                }
+            }
+        }
+    }
 
-    // 代码1原有数据结构
-    private static final Map<Object, Boolean> protectedViews = new IdentityHashMap<>();
-    private static final Map<Object, Object> vriToSurface = new IdentityHashMap<>();
-    private static final Map<Object, Boolean> dimHandled = new IdentityHashMap<>();
-    
-    // 代码2新增：记录已处理的小窗窗口
-    private static final Map<Object, Boolean> zoomWindows = new IdentityHashMap<>();
-    
-    // 代码2新增：当前焦点应用
+    // 数据存储
+    private static final WeakIdentityMap<Object, Boolean> protectedViews = new WeakIdentityMap<>();
+    private static final WeakIdentityMap<Object, Object> vriToSurface = new WeakIdentityMap<>();
+    private static final WeakIdentityMap<Object, Boolean> dimHandled = new WeakIdentityMap<>();
+    private static final WeakIdentityMap<Object, Boolean> zoomWindows = new WeakIdentityMap<>();
     private static String currentFocusedPackage = null;
 
     @Override
@@ -33,40 +85,28 @@ public class MainHook implements IXposedHookLoadPackage {
         String pkg = lpparam.packageName;
         if (pkg == null) return;
         
-        // 1. 窗口全局钩子（防截屏基础）
+        // 基础功能钩子
         hookWindowManagerGlobal(lpparam);
-        
-        // 2. 视图根节点钩子（防截屏核心）
         hookViewRootImpl(lpparam);
-        
-        // 3. 焦点保护钩子
         hookFocusProtection(lpparam.classLoader, pkg);
-        
-        // 4. 应用内小窗检测（如果应用内有小窗功能）
         hookAppInternalZoomWindows(lpparam.classLoader, pkg);
         
-        // 这些钩子只在Android系统包中生效，用于处理系统级窗口
-        
+        // 系统级钩子（仅在Android系统包中生效）
         if (pkg.equals("android")) {
-            XposedBridge.log("MainHook: Initializing system-level hooks...");
-            
-            // 5. 系统小窗检测（OPPO特有）
+            XposedBridge.log("[透明截图][DEBUG] 初始化系统级钩子...");
             hookSystemZoomWindows(lpparam.classLoader);
-            
-            // 6. Toast隐藏
             hookToastWindows(lpparam.classLoader);
-            
-            // 7. 输入法等特殊系统窗口
             hookSystemSpecialWindows(lpparam.classLoader);
-            
-            // 8. 系统级焦点监控
             hookSystemFocusMonitoring(lpparam.classLoader);
-            
-            XposedBridge.log("MainHook: System hooks initialized.");
+            XposedBridge.log("[透明截图][DEBUG] 系统钩子初始化完成.");
         }
     }
 
+    // ========== 窗口管理钩子 ==========
     
+    /**
+     * 钩子WindowManagerGlobal，处理窗口创建事件
+     */
     private void hookWindowManagerGlobal(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> wmg = XposedHelpers.findClass(
@@ -80,16 +120,32 @@ public class MainHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.args != null && param.args.length > 0 &&
-                                param.args[0] instanceof View) {
-                            protectedViews.put(param.args[0], Boolean.TRUE);
+                        if (param.args != null && param.args.length >= 2 &&
+                                param.args[0] instanceof View &&
+                                param.args[1] instanceof WindowManager.LayoutParams) {
+                            
+                            View view = (View) param.args[0];
+                            WindowManager.LayoutParams params = (WindowManager.LayoutParams) param.args[1];
+                            
+                            // 只保护应用窗口
+                            if (params.type >= WindowManager.LayoutParams.TYPE_APPLICATION && 
+                                params.type <= WindowManager.LayoutParams.TYPE_APPLICATION_MEDIA_OVERLAY) {
+                                protectedViews.put(view, Boolean.TRUE);
+                            }
                         }
                     }
                 }
             );
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            logError("WindowManagerGlobal钩子失败", t);
+        }
     }
 
+    // ========== 视图根节点钩子 ==========
+    
+    /**
+     * 钩子ViewRootImpl，处理视图绘制事件
+     */
     private void hookViewRootImpl(final XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> vriClass = XposedHelpers.findClass(
@@ -97,6 +153,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 lpparam.classLoader
             );
 
+            // 钩子relayoutWindow方法
             XposedBridge.hookAllMethods(
                 vriClass,
                 "relayoutWindow",
@@ -108,6 +165,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             );
 
+            // 钩子performTraversals方法
             XposedBridge.hookAllMethods(
                 vriClass,
                 "performTraversals",
@@ -120,6 +178,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         try {
                             view = XposedHelpers.getObjectField(vri, "mView");
                         } catch (Throwable t) {
+                            XposedBridge.log("[透明截图][DEBUG] 获取mView字段失败: " + t.getMessage());
                             return;
                         }
 
@@ -130,9 +189,14 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 }
             );
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            logError("ViewRootImpl钩子失败", t);
+        }
     }
 
+    /**
+     * 处理窗口调光
+     */
     private void handleDimming(Object vri) {
         try {
             if (dimHandled.containsKey(vri)) return;
@@ -145,9 +209,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 lp.dimAmount = 0f;
                 dimHandled.put(vri, Boolean.TRUE);
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            logError("处理窗口调光失败", t);
+        }
     }
 
+    /**
+     * 处理防截屏
+     */
     private void handleSecure(Object vri, ClassLoader cl) {
         try {
             Object sc = findValidSurface(vri);
@@ -169,41 +238,54 @@ public class MainHook implements IXposedHookLoadPackage {
             try {
                 XposedHelpers.callMethod(txn, "setSkipScreenshot", sc, true);
                 applied = true;
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                XposedBridge.log("[透明截图][DEBUG] 设置跳过截屏失败: " + t.getMessage());
+            }
 
             if (!applied && Build.VERSION.SDK_INT < 33) {
                 try {
                     XposedHelpers.callMethod(txn, "setSecure", sc, true);
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    XposedBridge.log("[透明截图][DEBUG] 设置安全模式失败: " + t.getMessage());
+                }
             }
 
             XposedHelpers.callMethod(txn, "apply");
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            logError("处理防截屏失败", t);
+        }
     }
 
+    /**
+     * 查找有效的Surface对象
+     */
     private Object findValidSurface(Object vri) {
-        String[] fields = {
-            "mSurfaceControl",
-            "mLeash",
-            "mSurfaceControlLocked",
-            "mSurface"
-        };
+        String[] fields = {"mSurfaceControl", "mLeash", "mSurfaceControlLocked", "mSurface"};
 
         for (String f : fields) {
             try {
                 Object sc = XposedHelpers.getObjectField(vri, f);
-                if (sc != null && (boolean) XposedHelpers.callMethod(sc, "isValid")) {
-                    return sc;
+                if (sc != null) {
+                    boolean isValid = (boolean) XposedHelpers.callMethod(sc, "isValid");
+                    if (isValid) {
+                        return sc;
+                    }
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                XposedBridge.log("[透明截图][DEBUG] 获取Surface字段" + f + "失败: " + t.getMessage());
+            }
         }
         return null;
     }
 
+    // ========== 焦点保护钩子 ==========
     
+    /**
+     * 钩子焦点保护相关方法
+     */
     private void hookFocusProtection(ClassLoader cl, final String packageName) {
         try {
-            // 1. 钩子窗口焦点变化
+            // 钩子View焦点变化
             XposedHelpers.findAndHookMethod(
                 "android.view.View",
                 cl,
@@ -214,14 +296,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         boolean hasFocus = (boolean) param.args[0];
                         if (hasFocus) {
-                            currentFocusedPackage = packageName;
-                            XposedBridge.log("MainHook: Focus gained by " + packageName);
+                            updateCurrentFocusedPackage(packageName, "获得焦点");
                         }
                     }
                 }
             );
             
-            // 2. 钩子Activity焦点
+            // 钩子Activity焦点
             try {
                 Class<?> activityClass = XposedHelpers.findClass("android.app.Activity", cl);
                 XposedHelpers.findAndHookMethod(
@@ -233,26 +314,36 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam param) {
                             boolean hasFocus = (boolean) param.args[0];
                             if (hasFocus) {
-                                currentFocusedPackage = packageName;
-                                XposedBridge.log("MainHook: Activity focus gained by " + packageName);
+                                updateCurrentFocusedPackage(packageName, "Activity获得焦点");
                             }
                         }
                     }
                 );
             } catch (Throwable t) {
-                // 忽略
+                XposedBridge.log("[透明截图][DEBUG] Activity焦点钩子失败: " + packageName + ": " + t.getMessage());
             }
             
         } catch (Throwable t) {
-            XposedBridge.log("MainHook: Focus protection hook failed for " + packageName + ": " + t);
+            XposedBridge.log("[透明截图][DEBUG] 焦点保护钩子失败: " + packageName + ": " + t.getMessage());
+            XposedBridge.log("[透明截图][DEBUG] " + Log.getStackTraceString(t));
         }
     }
-    
-    
-    private void hookAppInternalZoomWindows(ClassLoader cl, final String packageName) {
 
+    /**
+     * 更新当前焦点应用
+     */
+    private void updateCurrentFocusedPackage(String packageName, String event) {
+        currentFocusedPackage = packageName;
+        XposedBridge.log("[透明截图][DEBUG] " + event + ": " + packageName);
+    }
+
+    // ========== 应用内小窗钩子 ==========
+    
+    /**
+     * 钩子应用内小窗
+     */
+    private void hookAppInternalZoomWindows(ClassLoader cl, final String packageName) {
         try {
-            // 检测悬浮窗口
             XposedHelpers.findAndHookMethod(
                 "android.view.WindowManager",
                 cl,
@@ -273,17 +364,22 @@ public class MainHook implements IXposedHookLoadPackage {
                                 View view = (View) param.args[0];
                                 protectedViews.put(view, Boolean.TRUE);
                                 
-                                XposedBridge.log("MainHook: Detected app internal overlay in " + packageName);
+                                XposedBridge.log("[透明截图][DEBUG] 检测到应用内悬浮窗口: " + packageName);
                             }
                         }
                     }
                 }
             );
         } catch (Throwable t) {
-            // 忽略
+            logError("应用内小窗钩子失败: " + packageName, t);
         }
     }
+
+    // ========== 系统级钩子 ==========
     
+    /**
+     * 钩子系统小窗
+     */
     private void hookSystemZoomWindows(final ClassLoader cl) {
         try {
             Class<?> transactionClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl);
@@ -305,23 +401,38 @@ public class MainHook implements IXposedHookLoadPackage {
                             Object surfaceControl = XposedHelpers.getObjectField(winState, "mSurfaceControl");
                             
                             if (surfaceControl != null) {
-                                try {
-                                    XposedHelpers.callMethod(transaction, "setSkipScreenshot", surfaceControl, true);
-                                } catch (Throwable t) {
-                                    if (Build.VERSION.SDK_INT < 33) {
-                                        XposedHelpers.callMethod(transaction, "setSecure", surfaceControl, true);
-                                    }
-                                }
+                                setSurfaceSecure(transaction, surfaceControl);
                             }
                         }
                     }
                 }
             );
-        } catch (Throwable ignored) {
-            XposedBridge.log("MainHook: System zoom window hook failed");
+        } catch (Throwable t) {
+            logError("系统小窗钩子失败", t);
         }
     }
-    
+
+    /**
+     * 设置Surface安全属性
+     */
+    private void setSurfaceSecure(Object transaction, Object surfaceControl) {
+        try {
+            XposedHelpers.callMethod(transaction, "setSkipScreenshot", surfaceControl, true);
+        } catch (Throwable t) {
+            XposedBridge.log("[透明截图][DEBUG] 系统窗口设置跳过截屏失败: " + t.getMessage());
+            if (Build.VERSION.SDK_INT < 33) {
+                try {
+                    XposedHelpers.callMethod(transaction, "setSecure", surfaceControl, true);
+                } catch (Throwable t2) {
+                    XposedBridge.log("[透明截图][DEBUG] 系统窗口设置安全模式失败: " + t2.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 钩子Toast窗口
+     */
     private void hookToastWindows(final ClassLoader cl) {
         try {
             XposedHelpers.findAndHookMethod(
@@ -338,23 +449,25 @@ public class MainHook implements IXposedHookLoadPackage {
                                 int type = XposedHelpers.getIntField(attrs, "type");
                                 if (type == 2005) { // TYPE_TOAST
                                     param.setResult(false);
-                                    XposedBridge.log("MainHook: Hiding Toast window");
+                                    XposedBridge.log("[透明截图][DEBUG] 隐藏Toast窗口");
                                 }
                             }
                         } catch (Throwable t) {
-                            // 忽略
+                            XposedBridge.log("[透明截图][DEBUG] Toast窗口钩子失败: " + t.getMessage());
                         }
                     }
                 }
             );
         } catch (Throwable t) {
-            XposedBridge.log("MainHook: Toast hook failed: " + t);
+            logError("Toast钩子失败", t);
         }
     }
-    
+
+    /**
+     * 钩子系统特殊窗口（输入法等）
+     */
     private void hookSystemSpecialWindows(final ClassLoader cl) {
         try {
-            // 输入法窗口处理
             XposedHelpers.findAndHookMethod(
                 "com.android.server.wm.WindowState",
                 cl,
@@ -364,26 +477,43 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         Object winState = param.thisObject;
                         
-                        // 检测是否是特殊系统窗口（输入法、小窗等）
-                        if (isSystemSpecialWindow(winState)) {
-                            XposedBridge.log("MainHook: Intercepting focus for system special window");
+                        // 检测是否是需要处理的特殊窗口
+                        if (checkWindowForHide(winState)) {
+                            XposedBridge.log("[透明截图][DEBUG] 拦截系统特殊窗口焦点");
                             
-                            // 保持当前应用焦点
-                            if (currentFocusedPackage != null) {
+                            // 获取WindowManagerService实例
+                            Object wmService = XposedHelpers.getObjectField(winState, "mWmService");
+                            // 获取当前焦点窗口
+                            Object currentFocusedWindow = XposedHelpers.callMethod(wmService, "getFocusedWindowLocked");
+                            
+                            // 如果当前有有效焦点窗口且不是需要隐藏的窗口
+                            if (currentFocusedWindow != null && !checkWindowForHide(currentFocusedWindow)) {
+                                XposedBridge.log("[透明截图][DEBUG] 保持当前非特殊窗口焦点");
+                                // 将当前显示移到最上层
+                                int displayId = (int) XposedHelpers.callMethod(winState, "getDisplayId");
+                                XposedHelpers.callMethod(wmService, "moveDisplayToTopInternal", displayId);
+                                // 取消当前操作，阻止焦点切换
+                                param.setResult(null);
+                                return;
+                            } else {
+                                // 没有可保持的有效焦点，阻止所有操作
+                                XposedBridge.log("[透明截图][DEBUG] 没有可保持的有效焦点，阻止所有操作");
                                 param.setResult(null);
                             }
                         }
                     }
                 }
             );
-        } catch (Throwable ignored) {
-            XposedBridge.log("MainHook: System special window hook failed");
+        } catch (Throwable t) {
+            logError("系统特殊窗口钩子失败", t);
         }
     }
-    
+
+    /**
+     * 钩子系统焦点监控
+     */
     private void hookSystemFocusMonitoring(final ClassLoader cl) {
         try {
-            // 监控系统焦点变化
             XposedHelpers.findAndHookMethod(
                 "com.android.server.wm.WindowManagerService",
                 cl,
@@ -400,45 +530,51 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (pkg != null && !pkg.equals("android") && 
                                     !pkg.equals("com.android.systemui")) {
                                     currentFocusedPackage = pkg;
-                                    XposedBridge.log("MainHook: System focus set to " + pkg);
+                                    XposedBridge.log("[透明截图][DEBUG] 系统焦点设置为: " + pkg);
                                 }
                             } catch (Throwable t) {
-                                // 忽略
+                                XposedBridge.log("[透明截图][DEBUG] 获取所属包名失败: " + t.getMessage());
                             }
                         }
                     }
                 }
             );
         } catch (Throwable t) {
-            XposedBridge.log("MainHook: System focus monitoring hook failed: " + t);
+            logError("系统焦点监控钩子失败", t);
         }
     }
+
+    // ========== 窗口检测工具方法 ==========
     
-    // ========== 系统特殊窗口检测 ==========
-    
+    /**
+     * 检测是否是系统特殊窗口（保留用于兼容现有代码）
+     */
     private boolean isSystemSpecialWindow(Object winState) {
+        return checkWindowForHide(winState);
+    }
+
+    /**
+     * 检测是否是需要处理的特殊窗口
+     */
+    private boolean checkWindowForHide(Object winState) {
         try {
             String tag = String.valueOf(XposedHelpers.callMethod(winState, "getWindowTag", new Object[0]));
             String pkg = (String) XposedHelpers.callMethod(winState, "getOwningPackage", new Object[0]);
             
-            // 1. 输入法检测
-            if ("InputMethod".equals(tag)) {
-                return true;
-            }
-            
-            // 2. OPPO特有检测
+            // 1. 特殊窗口标签检测
             if ("com.oplus.screenshot/LongshotCapture".equals(tag) ||
-                (tag != null && tag.contains("OplusOSZoomFloatHandleView"))) {
+                (tag != null && tag.contains("OplusOSZoomFloatHandleView")) ||
+                "InputMethod".equals(tag)) {
                 return true;
             }
             
-            // 3. 系统UI特殊包名
+            // 2. 特殊包名检测
             if ("com.oplus.appplatform".equals(pkg) ||
                 "com.coloros.smartsidebar".equals(pkg)) {
                 return true;
             }
             
-            // 4. OPPO小窗模式检测
+            // 3. OPPO小窗模式检测
             try {
                 Object ext = XposedHelpers.getObjectField(winState, "mWindowStateExt");
                 if (ext != null) {
@@ -447,10 +583,64 @@ public class MainHook implements IXposedHookLoadPackage {
                         return true;
                     }
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                // 忽略异常，继续检测其他条件
+            }
             
-        } catch (Throwable ignored) {
+            // 4. 灵活任务窗口检测
+            Object task = XposedHelpers.callMethod(winState, "getTask", new Object[0]);
+            if (task == null) return false;
+            
+            Object rootTask = XposedHelpers.callMethod(task, "getRootTask", new Object[0]);
+            if (rootTask == null) rootTask = task;
+            
+            if (!isFlexibleTaskAndHasCaption(rootTask)) return false;
+            
+            try {
+                Object wrapper = XposedHelpers.callMethod(rootTask, "getWrapper", new Object[0]);
+                if (wrapper == null) return false;
+                
+                Object extImpl = XposedHelpers.callMethod(wrapper, "getExtImpl", new Object[0]);
+                if (extImpl == null) return false;
+                
+                int flexibleZoomState = (int) XposedHelpers.callMethod(extImpl, "getFlexibleZoomState", new Object[0]);
+                if (flexibleZoomState != 0) return true;
+            } catch (Throwable t) {
+                // 忽略异常
+            }
+        } catch (Throwable t) {
+            // 忽略所有异常，确保方法不会崩溃
         }
         return false;
+    }
+
+    /**
+     * 检测是否是具有标题的灵活任务窗口
+     */
+    private static boolean isFlexibleTaskAndHasCaption(Object rootTask) {
+        ClassLoader cl = rootTask.getClass().getClassLoader();
+        
+        boolean isFlexibleTask = false;
+        try {
+            Class<?> flexUtilsClass = XposedHelpers.findClass("com.android.server.wm.FlexibleWindowUtils", cl);
+            isFlexibleTask = (boolean) XposedHelpers.callStaticMethod(
+                    flexUtilsClass,
+                    "isFlexibleTaskAndHasCaption",
+                    rootTask
+            );
+        } catch (Throwable t) {
+            XposedBridge.log("[透明截图][DEBUG] 灵活任务检测失败: " + t.getMessage());
+        }
+        return isFlexibleTask;
+    }
+
+    // ========== 工具方法 ==========
+    
+    /**
+     * 统一的错误日志记录
+     */
+    private void logError(String message, Throwable t) {
+        XposedBridge.log("[透明截图][DEBUG] " + message + ": " + t.getMessage());
+        XposedBridge.log("[透明截图][DEBUG] " + Log.getStackTraceString(t));
     }
 }
