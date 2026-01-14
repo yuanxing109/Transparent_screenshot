@@ -422,23 +422,44 @@ public class MainHook implements IXposedHookLoadPackage {
     }
     
     /**
+     * 从WindowState对象获取对应的SurfaceControl
+     * @param winState WindowState对象
+     * @return SurfaceControl对象，或null
+     */
+    private Object getSurfaceControlFromWindowState(Object winState) {
+        try {
+            // 尝试不同的SurfaceControl字段
+            String[] possibleFields = {
+                "mSurfaceControl",    // 主要SurfaceControl
+                "mLeash",            // Leash SurfaceControl
+                "mSurfaceControlLocked" // 锁定的SurfaceControl
+            };
+            
+            for (String field : possibleFields) {
+                try {
+                    Object surfaceControl = XposedHelpers.getObjectField(winState, field);
+                    if (surfaceControl != null && 
+                        (boolean) XposedHelpers.callMethod(surfaceControl, "isValid")) {
+                        return surfaceControl;
+                    }
+                } catch (Throwable ignored) {
+                    // 忽略异常，继续尝试其他字段
+                }
+            }
+        } catch (Throwable ignored) {
+            // 忽略所有异常
+        }
+        return null;
+    }
+    
+    /**
      * 从WindowState对象获取对应的ViewRootImpl
      * @param winState WindowState对象
      * @return ViewRootImpl对象，或null
      */
     private Object getViewRootImplFromWindowState(Object winState) {
         try {
-            // 尝试通过不同的路径获取ViewRootImpl
-            
-            // 方法1: 通过WindowState -> SurfaceControl -> ViewRootImpl
-            Object surfaceControl = XposedHelpers.getObjectField(winState, "mSurfaceControl");
-            if (surfaceControl != null) {
-                // 尝试通过SurfaceControl找到对应的ViewRootImpl
-                // 这部分可能需要更复杂的反射逻辑，取决于系统版本
-                return surfaceControl;
-            }
-            
-            // 方法2: 通过WindowState -> WindowToken -> IWindow
+            // 方法1: 通过WindowState -> WindowToken -> IWindow
             Object windowToken = XposedHelpers.getObjectField(winState, "mToken");
             if (windowToken != null) {
                 Object client = XposedHelpers.getObjectField(windowToken, "window");
@@ -448,17 +469,19 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             }
             
-            // 方法3: 直接查找可能的ViewRootImpl引用字段
-            String[] possibleFields = {"mViewRootImpl", "mView", "mClient"};
-            for (String field : possibleFields) {
-                try {
-                    Object result = XposedHelpers.getObjectField(winState, field);
-                    if (result != null) {
-                        return result;
+            // 方法2: 通过WindowState -> Session -> ViewRootImpl
+            // 这是另一种可能的路径
+            try {
+                Object session = XposedHelpers.getObjectField(winState, "mSession");
+                if (session != null) {
+                    // 尝试获取session中的ViewRootImpl引用
+                    Object viewRootImpl = XposedHelpers.getObjectField(session, "mViewRootImpl");
+                    if (viewRootImpl != null) {
+                        return viewRootImpl;
                     }
-                } catch (Throwable ignored) {
-                    // 忽略异常，继续尝试其他字段
                 }
+            } catch (Throwable ignored) {
+                // 忽略异常
             }
         } catch (Throwable ignored) {
             // 忽略所有异常
@@ -477,45 +500,47 @@ public class MainHook implements IXposedHookLoadPackage {
                 return;
             }
             
-            // 2. 获取ViewRootImpl对象
+            // 2. 获取类加载器
+            ClassLoader cl = winState.getClass().getClassLoader();
+            
+            // 3. 优先使用ViewRootImpl进行保护
             Object vri = getViewRootImplFromWindowState(winState);
-            if (vri == null) {
-                // 如果无法获取ViewRootImpl，尝试使用WindowState的类加载器
-                ClassLoader cl = winState.getClass().getClassLoader();
-                
-                // 3. 直接使用WindowState的SurfaceControl进行保护
-                Object surfaceControl = XposedHelpers.getObjectField(winState, "mSurfaceControl");
-                if (surfaceControl != null) {
-                    // 创建SurfaceControl.Transaction对象
-                    Class<?> txnClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl);
-                    Object txn = XposedHelpers.newInstance(txnClass);
-                    
-                    boolean applied = false;
-                    
-                    // 尝试使用setSkipScreenshot方法（Android 33+）
-                    try {
-                        XposedHelpers.callMethod(txn, "setSkipScreenshot", surfaceControl, true);
-                        applied = true;
-                    } catch (Throwable ignored) {
-                        // 忽略异常，尝试其他方法
-                    }
-                    
-                    // 如果setSkipScreenshot失败且Android版本低于33，则使用setSecure方法
-                    if (!applied && Build.VERSION.SDK_INT < 33) {
-                        try {
-                            XposedHelpers.callMethod(txn, "setSecure", surfaceControl, true);
-                        } catch (Throwable ignored) {
-                            // 忽略异常
-                        }
-                    }
-                    
-                    // 应用事务
-                    XposedHelpers.callMethod(txn, "apply");
-                }
-            } else {
-                // 4. 使用标准的视图保护方法
-                ClassLoader cl = vri.getClass().getClassLoader();
+            if (vri != null) {
                 handleSecure(vri, cl);
+                
+                // 同时处理窗口变暗效果
+                handleDimming(vri);
+            } 
+            
+            // 4. 无论是否获取到ViewRootImpl，都直接保护WindowState的SurfaceControl
+            // 这确保了即使没有ViewRootImpl引用的系统窗口（如输入法、小窗）也能得到保护
+            Object surfaceControl = getSurfaceControlFromWindowState(winState);
+            if (surfaceControl != null) {
+                // 创建SurfaceControl.Transaction对象
+                Class<?> txnClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl);
+                Object txn = XposedHelpers.newInstance(txnClass);
+                
+                boolean applied = false;
+                
+                // 尝试使用setSkipScreenshot方法（Android 33+）
+                try {
+                    XposedHelpers.callMethod(txn, "setSkipScreenshot", surfaceControl, true);
+                    applied = true;
+                } catch (Throwable ignored) {
+                    // 忽略异常，尝试其他方法
+                }
+                
+                // 如果setSkipScreenshot失败且Android版本低于33，则使用setSecure方法
+                if (!applied && Build.VERSION.SDK_INT < 33) {
+                    try {
+                        XposedHelpers.callMethod(txn, "setSecure", surfaceControl, true);
+                    } catch (Throwable ignored) {
+                        // 忽略异常
+                    }
+                }
+                
+                // 应用事务
+                XposedHelpers.callMethod(txn, "apply");
             }
         } catch (Throwable ignored) {
             // 忽略所有异常
