@@ -3,7 +3,7 @@ package com.dszsu.tss;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
-import javax.swing.text.View;
+import android.view.View;
 
 import android.os.Build;
 import android.view.WindowManager;
