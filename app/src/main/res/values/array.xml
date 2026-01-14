@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="scope">
-        <item>system</item>
+        <item>android</item>
         <item>com.oplus.screenshot</item>
         <item>com.oplus.appplatform</item>
         <item>com.zmzx.college.search</item>
