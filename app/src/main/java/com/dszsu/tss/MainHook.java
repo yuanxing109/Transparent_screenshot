@@ -129,7 +129,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             
                             // 只保护应用窗口
                             if (params.type >= WindowManager.LayoutParams.TYPE_APPLICATION && 
-                                params.type <= WindowManager.LayoutParams.TYPE_APPLICATION_MEDIA_OVERLAY) {
+                                params.type <= WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG) {
                                 protectedViews.put(view, Boolean.TRUE);
                             }
                         }
