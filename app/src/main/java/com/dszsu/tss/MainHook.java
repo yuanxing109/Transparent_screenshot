@@ -634,13 +634,8 @@ public class MainHook implements IXposedHookLoadPackage {
                     "isFlexibleTaskAndHasCaption",
                     rootTask
             );
-        } catch (ClassNotFoundException e) {
-            // FlexibleWindowUtils类在当前Android版本中不存在，不输出日志
         } catch (NoSuchMethodError e) {
-            // isFlexibleTaskAndHasCaption方法在当前Android版本中不存在，不输出日志
         } catch (Throwable t) {
-            // 其他异常，仅在调试模式下输出日志
-            // XposedBridge.log("[透明截图][DEBUG] 灵活任务检测失败: " + t.getMessage());
         }
         return isFlexibleTask;
     }
