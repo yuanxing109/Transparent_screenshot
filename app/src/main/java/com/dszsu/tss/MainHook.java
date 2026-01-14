@@ -344,17 +344,20 @@ public class MainHook implements IXposedHookLoadPackage {
      */
     private void hookAppInternalZoomWindows(ClassLoader cl, final String packageName) {
         try {
-            XposedHelpers.findAndHookMethod(
-                "android.view.WindowManager",
-                cl,
+            // 使用hookAllMethods代替findAndHookMethod，避免方法签名问题
+            Class<?> windowManagerClass = XposedHelpers.findClass("android.view.WindowManager", cl);
+            XposedBridge.hookAllMethods(
+                windowManagerClass,
                 "addView",
-                View.class,
-                WindowManager.LayoutParams.class,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        WindowManager.LayoutParams params = (WindowManager.LayoutParams) param.args[1];
-                        if (params != null) {
+                        // 检查参数是否符合预期
+                        if (param.args != null && param.args.length >= 2 &&
+                            param.args[0] instanceof View &&
+                            param.args[1] instanceof WindowManager.LayoutParams) {
+                            
+                            WindowManager.LayoutParams params = (WindowManager.LayoutParams) param.args[1];
                             // 检测是否是悬浮窗口类型
                             if (params.type >= WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY ||
                                 params.type == WindowManager.LayoutParams.TYPE_TOAST ||
@@ -371,7 +374,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             );
         } catch (Throwable t) {
-            logError("应用内小窗钩子失败: " + packageName, t);
+            // 只记录简单的错误信息，避免日志过多
+            XposedBridge.log("[透明截图][DEBUG] 应用内小窗钩子失败: " + packageName + ": " + t.getMessage());
         }
     }
 
@@ -622,14 +626,21 @@ public class MainHook implements IXposedHookLoadPackage {
         
         boolean isFlexibleTask = false;
         try {
+            // 尝试查找FlexibleWindowUtils类
             Class<?> flexUtilsClass = XposedHelpers.findClass("com.android.server.wm.FlexibleWindowUtils", cl);
+            // 尝试调用isFlexibleTaskAndHasCaption方法
             isFlexibleTask = (boolean) XposedHelpers.callStaticMethod(
                     flexUtilsClass,
                     "isFlexibleTaskAndHasCaption",
                     rootTask
             );
+        } catch (ClassNotFoundException e) {
+            // FlexibleWindowUtils类在当前Android版本中不存在，不输出日志
+        } catch (NoSuchMethodError e) {
+            // isFlexibleTaskAndHasCaption方法在当前Android版本中不存在，不输出日志
         } catch (Throwable t) {
-            XposedBridge.log("[透明截图][DEBUG] 灵活任务检测失败: " + t.getMessage());
+            // 其他异常，仅在调试模式下输出日志
+            // XposedBridge.log("[透明截图][DEBUG] 灵活任务检测失败: " + t.getMessage());
         }
         return isFlexibleTask;
     }
