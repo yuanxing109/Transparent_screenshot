@@ -303,13 +303,16 @@ public class MainHook implements IXposedHookLoadPackage {
                 int type = attrs.type;
                 
                 // 排除系统级窗口类型
+                // 注意：使用兼容的窗口类型常量
                 if (type == WindowManager.LayoutParams.TYPE_INPUT_METHOD ||
-                    type == WindowManager.LayoutParams.TYPE_NOTIFICATION_SHADE ||
-                    type == WindowManager.LayoutParams.TYPE_STATUS_BAR ||
-                    type == WindowManager.LayoutParams.TYPE_NAVIGATION_BAR ||
                     type == WindowManager.LayoutParams.TYPE_SYSTEM_ALERT ||
                     type == WindowManager.LayoutParams.TYPE_TOAST ||
-                    type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) {
+                    type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY ||
+                    type == WindowManager.LayoutParams.TYPE_SYSTEM_ERROR ||
+                    type == WindowManager.LayoutParams.TYPE_PHONE ||
+                    type == WindowManager.LayoutParams.TYPE_PRIORITY_PHONE ||
+                    type == WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY ||
+                    type == WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG) {
                     return false;
                 }
                 
@@ -342,7 +345,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 pkg.startsWith("com.android.") ||
                 pkg.startsWith("com.coloros.") || 
                 pkg.startsWith("com.oplus.") ||
-                pkg.startsWith("android.systemui")) {
+                pkg.equals("com.android.systemui") ||
+                pkg.startsWith("com.android.systemui")) {
                 return true;
             }
             
@@ -352,7 +356,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 tag.contains("SystemUI") ||
                 tag.contains("Keyguard") ||
                 tag.contains("NavigationBar") ||
-                tag.contains("StatusBar")
+                tag.contains("StatusBar") ||
+                tag.contains("Notification") ||
+                tag.contains("Volume") ||
+                tag.contains("Power") ||
+                tag.contains("Screenshot")
             )) {
                 return true;
             }
@@ -411,7 +419,8 @@ public class MainHook implements IXposedHookLoadPackage {
                     tag.contains("Toast") ||
                     tag.contains("Popup") ||
                     tag.contains("Bubble") ||
-                    tag.contains("Assistant")) {
+                    tag.contains("Assistant") ||
+                    tag.contains("Overlay")) {
                     return true;
                 }
             }
