@@ -20,7 +20,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 用于钩子Android系统中的视图和窗口管理功能，实现视图保护和窗口效果处理
  * 整合了原始Entry模块的OPPO/一加特定功能
  */
-公共 class MainHook implements IXposedHookLoadPackage {
+public class MainHook implements IXposedHookLoadPackage {
 
     /**
      * 存储受保护的视图
