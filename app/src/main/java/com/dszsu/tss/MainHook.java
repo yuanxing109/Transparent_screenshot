@@ -1,5 +1,7 @@
 package com.dszsu.tss;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.IdentityHashMap;
 import java.util.Map;
 
@@ -16,6 +18,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * MainHook Xposed模块
  * 用于钩子Android系统中的视图和窗口管理功能，实现视图保护和窗口效果处理
+ * 整合了原始Entry模块的OPPO/一加特定功能
  */
 public class MainHook implements IXposedHookLoadPackage {
 
@@ -58,10 +61,12 @@ public class MainHook implements IXposedHookLoadPackage {
             hookViewRootImpl(lpparam);
         }
         
-        // 钩子系统框架中的窗口焦点处理（对所有应用生效）
-        // 注意：WindowState类是系统级的，只需在android包加载时钩子一次即可影响所有应用
+        // 钩子系统框架中的窗口焦点处理和OPPO特定功能
         if (pkg.equals("android")) {
+            XposedBridge.log("MainHook: Initializing system hooks...");
             hookHandleTapOutsideFocusInsideSelf(lpparam.classLoader);
+            hookOplusZoomWindow(lpparam.classLoader);
+            XposedBridge.log("MainHook: System hooks initialized.");
         }
     }
 
@@ -290,8 +295,8 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * 钩子窗口焦点外点击事件处理方法
-     * 用于拦截特定窗口在焦点外点击时的默认行为，并保护对应的视图不被截图
+     * 钩子窗口焦点外点击事件处理方法（整合Entry中的逻辑）
+     * 用于拦截特定窗口在焦点外点击时的默认行为
      * @param cl 系统类加载器
      */
     private void hookHandleTapOutsideFocusInsideSelf(final ClassLoader cl) {
@@ -312,11 +317,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             // 获取当前WindowState对象
                             Object winState = param.thisObject;
                             
-                            // 使用视图保护方法替代原来的焦点拦截逻辑
+                            // 使用视图保护方法
                             protectWindow(winState);
                             
-                            // 仍然保留原有的焦点拦截逻辑，确保兼容性
-                            if (checkWindowForHide(winState)) {
+                            // 保留Entry原有的焦点拦截逻辑
+                            if (checkOplusWindowForHide(winState)) {
                                 // 获取WindowManagerService对象
                                 Object wmService = XposedHelpers.getObjectField(winState, "mWmService");
                                 
@@ -324,7 +329,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 Object currentFocusedWindow = XposedHelpers.callMethod(wmService, "getFocusedWindowLocked");
                                 
                                 // 如果当前有焦点窗口且该窗口不需要隐藏
-                                if (currentFocusedWindow != null && !checkWindowForHide(currentFocusedWindow)) {
+                                if (currentFocusedWindow != null && !checkOplusWindowForHide(currentFocusedWindow)) {
                                     // 获取显示ID
                                     int displayId = (int) XposedHelpers.callMethod(winState, "getDisplayId");
                                     
@@ -348,73 +353,103 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * 检查窗口是否需要保护
+     * 钩子OPPO缩放窗口更新表面位置方法（从Entry移植）
+     * @param cl 系统类加载器
+     */
+    private void hookOplusZoomWindow(final ClassLoader cl) {
+        try {
+            Class<?> transactionClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction", cl);
+            XposedHelpers.findAndHookMethod(
+                    "com.android.server.wm.WindowState",
+                    cl,
+                    "updateSurfacePosition",
+                    transactionClass,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            Object winState = param.thisObject;
+                            boolean isNeedHide = checkOplusWindowForHide(winState);
+                            Object transaction = param.args[0];
+                            Object surfaceControl = XposedHelpers.getObjectField(winState, "mSurfaceControl");
+                            if (surfaceControl != null) {
+                                XposedHelpers.callMethod(transaction, "setSkipScreenshot", surfaceControl, isNeedHide);
+                            }
+
+                            Object task = XposedHelpers.callMethod(winState, "getTask");
+                            if (task != null) {
+                                Object taskSurface = XposedHelpers.callMethod(task, "getSurfaceControl");
+                                if (taskSurface != null) {
+                                    XposedHelpers.callMethod(transaction, "setSkipScreenshot", taskSurface, isNeedHide);
+                                }
+                            }
+                        }
+                    });
+        } catch (Throwable ignored) {
+            // 忽略异常
+        }
+    }
+
+    /**
+     * 检查窗口是否需要隐藏（OPPO特定逻辑，从Entry移植）
+     * @param winState WindowState对象
+     * @return 是否需要隐藏窗口
+     */
+    private boolean checkOplusWindowForHide(Object winState) {
+        try {
+            String tag = String.valueOf(XposedHelpers.callMethod(winState, "getWindowTag"));
+            String pkg = (String) XposedHelpers.callMethod(winState, "getOwningPackage");
+            if ("com.oplus.screenshot/LongshotCapture".equals(tag)
+                    || tag.contains("OplusOSZoomFloatHandleView")
+                    || "InputMethod".equals(tag)
+                    || "com.oplus.appplatform".equals(pkg)
+                    || "com.coloros.smartsidebar".equals(pkg)) {
+                return true;
+            }
+            try {
+                Object ext = XposedHelpers.getObjectField(winState, "mWindowStateExt");
+                if (ext != null) {
+                    int mode = (int) XposedHelpers.callMethod(winState, "getWindowingMode");
+                    if ((boolean)XposedHelpers.callMethod(ext, "checkIfWindowingModeZoom", mode)) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+            Object task = XposedHelpers.callMethod(winState, "getTask");
+            if (task == null) return false;
+            Object rootTask = XposedHelpers.callMethod(task, "getRootTask");
+            if (rootTask == null) rootTask = task;
+            if (!isFlexibleTaskAndHasCaption(rootTask)) return false;
+            Object wrapper = XposedHelpers.callMethod(rootTask, "getWrapper");
+            if (wrapper == null) return false;
+            Object extImpl = XposedHelpers.callMethod(wrapper, "getExtImpl");
+            if (extImpl == null) return false;
+            int flexibleZoomState = (int) XposedHelpers.callMethod(extImpl, "getFlexibleZoomState");
+            if (flexibleZoomState != 0) return true;
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * 检查窗口是否需要保护（MainHook原有逻辑，增强版）
      * @param winState WindowState对象
      * @return 是否需要保护窗口
      */
     private boolean checkWindowForHide(Object winState) {
         try {
-            // 获取窗口标签
-            String tag = String.valueOf(XposedHelpers.callMethod(winState, "getWindowTag"));
+            // 首先检查OPPO特定窗口
+            if (checkOplusWindowForHide(winState)) {
+                return true;
+            }
             
             // 获取窗口所属包名
             String pkg = (String) XposedHelpers.callMethod(winState, "getOwningPackage");
             
-            // 检查特定窗口标签或包名
-            if ("com.oplus.screenshot/LongshotCapture".equals(tag) // 长截图捕获窗口
-                    || tag.contains("OplusOSZoomFloatHandleView") // OPPO缩放浮动手柄视图
-                    || "InputMethod".equals(tag) // 输入法窗口
-                    || "com.oplus.appplatform".equals(pkg) // OPPO应用平台
-                    || "com.coloros.smartsidebar".equals(pkg)) { // ColorOS智能侧边栏
+            // 对所有第三方应用窗口也进行保护（MainHook原有逻辑）
+            if (pkg != null && !pkg.equals("android") && !pkg.startsWith("com.android.") 
+                && !pkg.startsWith("com.coloros.") && !pkg.startsWith("com.oplus.")) {
                 return true;
             }
             
-            // 对所有第三方应用窗口也进行焦点拦截
-            if (pkg != null && !pkg.equals("android") && !pkg.startsWith("com.android.") && !pkg.startsWith("com.coloros.") && !pkg.startsWith("com.oplus.")) {
-                return true;
-            }
-            
-            // 检查窗口扩展是否为缩放模式
-            try {
-                // 获取WindowState的扩展对象
-                Object ext = XposedHelpers.getObjectField(winState, "mWindowStateExt");
-                if (ext != null) {
-                    // 获取窗口模式
-                    int mode = (int) XposedHelpers.callMethod(winState, "getWindowingMode");
-                    
-                    // 检查窗口模式是否为缩放模式
-                    if ((boolean)XposedHelpers.callMethod(ext, "checkIfWindowingModeZoom", mode)) {
-                        return true;
-                    }
-                }
-            } catch (Throwable ignored) {
-                // 忽略异常，继续检查其他条件
-            }
-            
-            // 检查灵活任务相关状态
-            Object task = XposedHelpers.callMethod(winState, "getTask");
-            if (task == null) return false;
-            
-            // 获取根任务
-            Object rootTask = XposedHelpers.callMethod(task, "getRootTask");
-            if (rootTask == null) rootTask = task;
-            
-            // 检查是否为灵活任务且有标题
-            if (!isFlexibleTaskAndHasCaption(rootTask)) return false;
-            
-            // 获取任务包装器
-            Object wrapper = XposedHelpers.callMethod(rootTask, "getWrapper");
-            if (wrapper == null) return false;
-            
-            // 获取扩展实现
-            Object extImpl = XposedHelpers.callMethod(wrapper, "getExtImpl");
-            if (extImpl == null) return false;
-            
-            // 获取灵活缩放状态
-            int flexibleZoomState = (int) XposedHelpers.callMethod(extImpl, "getFlexibleZoomState");
-            
-            // 如果缩放状态不为0，则需要隐藏
-            if (flexibleZoomState != 0) return true;
         } catch (Throwable ignored) {
             // 忽略所有异常，返回false
         }
