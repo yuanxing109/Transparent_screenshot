@@ -63,10 +63,10 @@ public class MainHook implements IXposedHookLoadPackage {
         
         // 钩子系统框架中的窗口焦点处理和OPPO特定功能
         if (pkg.equals("android")) {
-            XposedBridge.log("MainHook: Initializing system hooks...");
+            XposedBridge.log("透明截图: 初始化系统钩子...");
             hookHandleTapOutsideFocusInsideSelf(lpparam.classLoader);
             hookOplusZoomWindow(lpparam.classLoader);
-            XposedBridge.log("MainHook: System hooks initialized.");
+            XposedBridge.log("透明截图: 系统钩子初始化完成.");
         }
     }
 
@@ -226,11 +226,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
 
             // 创建SurfaceControl.Transaction对象
-            Class<?> txnClass =
-                    XposedHelpers.findClass(
-                            "android.view.SurfaceControl$Transaction",
-                            cl
-                    );
+            Class<?> txnClass = XposedHelpers.findClass("android.view.SurfaceControl$Transaction",cl);
             Object txn = XposedHelpers.newInstance(txnClass);
 
             boolean applied = false;
@@ -320,35 +316,36 @@ public class MainHook implements IXposedHookLoadPackage {
                             // 使用视图保护方法
                             protectWindow(winState);
                             
-                            // 保留Entry原有的焦点拦截逻辑
-                            if (checkOplusWindowForHide(winState)) {
-                                // 获取WindowManagerService对象
-                                Object wmService = XposedHelpers.getObjectField(winState, "mWmService");
+                            // 修正的焦点拦截逻辑：保护所有需要保护的窗口的焦点
+                            // 获取WindowManagerService对象
+                            Object wmService = XposedHelpers.getObjectField(winState, "mWmService");
+                            
+                            // 获取当前获得焦点的窗口
+                            Object currentFocusedWindow = XposedHelpers.callMethod(wmService, "getFocusedWindowLocked");
+                            
+                            // 如果当前有焦点窗口且该窗口需要保护（使用更广泛的checkWindowForHide方法）
+                            if (currentFocusedWindow != null && checkWindowForHide(currentFocusedWindow)) {
+                                // 获取当前焦点窗口的包名
+                                String focusedPkg = (String) XposedHelpers.callMethod(currentFocusedWindow, "getOwningPackage");
                                 
-                                // 获取当前获得焦点的窗口
-                                Object currentFocusedWindow = XposedHelpers.callMethod(wmService, "getFocusedWindowLocked");
+                                // 输出焦点保护日志
+                                XposedBridge.log("透明截图 ：" + focusedPkg + "被保护");
                                 
-                                // 如果当前有焦点窗口且该窗口不需要隐藏
-                                if (currentFocusedWindow != null && !checkOplusWindowForHide(currentFocusedWindow)) {
-                                    // 获取显示ID
-                                    int displayId = (int) XposedHelpers.callMethod(winState, "getDisplayId");
-                                    
-                                    // 将当前显示移动到顶部
-                                    XposedHelpers.callMethod(wmService, "moveDisplayToTopInternal", displayId);
-                                    
-                                    // 设置方法结果为null，阻止原方法执行（核心拦截逻辑）
-                                    param.setResult(null);
-                                    return;
-                                } else {
-                                    // 没有有效的焦点窗口可维护，阻止所有操作
-                                    param.setResult(null);
-                                }
+                                // 获取显示ID
+                                int displayId = (int) XposedHelpers.callMethod(winState, "getDisplayId");
+                                
+                                // 将当前显示移动到顶部
+                                XposedHelpers.callMethod(wmService, "moveDisplayToTopInternal", displayId);
+                                
+                                // 设置方法结果为null，阻止原方法执行（核心拦截逻辑）
+                                param.setResult(null);
+                                return;
                             }
                         }
                     });
         } catch (Throwable ignored) {
             // 记录钩子失败日志
-            XposedBridge.log("MainHook: Hook handleTapOutsideFocusInsideSelf failed.");
+            XposedBridge.log("透明截图: 钩子 handleTapOutsideFocusInsideSelf 失败.");
         }
     }
 
