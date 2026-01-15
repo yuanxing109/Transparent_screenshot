@@ -20,7 +20,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 用于钩子Android系统中的视图和窗口管理功能，实现视图保护和窗口效果处理
  * 整合了原始Entry模块的OPPO/一加特定功能
  */
-public class MainHook implements IXposedHookLoadPackage {
+公共 class MainHook implements IXposedHookLoadPackage {
 
     /**
      * 存储受保护的视图
@@ -335,7 +335,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 int displayId = (int) XposedHelpers.callMethod(winState, "getDisplayId");
                                 
                                 // 将当前显示移动到顶部
-                                XposedHelpers.callMethod(wmService, "moveDisplayToTopInternal", displayId);
+                                XposedHelpers.callMethod(wmService, "moveDisplayToTopInternal", Integer.valueOf(displayId));
                                 
                                 // 设置方法结果为null，阻止原方法执行（核心拦截逻辑）
                                 param.setResult(null);
