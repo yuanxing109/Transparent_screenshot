@@ -6,7 +6,7 @@ import os
 
 def check_url(url):
     try:
-        response = requests.head(url, timeout=10)
+        response = requests.head(url, timeout=10, allow_redirects=True)
         return response.status_code == 200
     except:
         return False
@@ -15,7 +15,7 @@ def main():
     dependencies = {
         "Xposed API": "https://api.xposed.info/",
         "JitPack": "https://jitpack.io/",
-        "Google Maven": "https://maven.google.com/",
+        "Google Maven": "https://dl.google.com/dl/android/maven2/",
         "Maven Central": "https://repo.maven.apache.org/maven2/"
     }
     
