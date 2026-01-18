@@ -2,13 +2,14 @@
 
 import requests
 import sys
-import os
 
 def check_url(url):
     try:
-        response = requests.head(url, timeout=10, allow_redirects=True)
+        # 使用 GET 而不是 HEAD，因为部分服务器不支持 HEAD
+        response = requests.get(url, timeout=10, allow_redirects=True)
         return response.status_code == 200
-    except:
+    except Exception as e:
+        print(f"Error: {e}")
         return False
 
 def main():
