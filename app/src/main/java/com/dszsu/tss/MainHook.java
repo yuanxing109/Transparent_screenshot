@@ -112,9 +112,6 @@ public class MainHook implements IXposedHookLoadPackage {
     // 判断是否是临时窗口（Dialog、Popup等）
     private boolean isTransientWindow(android.app.Activity activity) {
         try {
-            // 检查是否是Dialog
-            if (activity instanceof android.app.Dialog) return true;
-            
             // 检查Window类型
             Window window = activity.getWindow();
             if (window != null) {
@@ -124,11 +121,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             }
             
-            // 检查类名
+            // 检查类名（Activity可能命名为DialogActivity，但不是真正的Dialog）
             String className = activity.getClass().getName();
-            return className.contains("Dialog") || 
-                   className.contains("Popup") ||
-                   className.contains("Toast");
+            return className.contains("Popup") || 
+                   className.contains("Toast") ||
+                   className.contains("DialogActivity");
         } catch (Throwable ignored) {
             return false;
         }
