@@ -68,7 +68,6 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             // 只Hook最关键的层级，减少性能开销
             hookActivityFocusChanged(lpparam);
-            // 移除其他冗余Hook，一个Activity层级就够了
         } catch (Throwable t) {
             XposedBridge.log(TAG + " 初始化失败: " + t.getMessage());
         }
@@ -153,16 +152,38 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    // ==================== 画面隐藏功能（保持不变） ====================
+    // ==================== 画面隐藏功能（方案2：根据Window类型过滤） ====================
     private void hookWindowManagerGlobal(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> wmg = XposedHelpers.findClass("android.view.WindowManagerGlobal", lpparam.classLoader);
+            
             XposedBridge.hookAllMethods(wmg, "addView", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (param.args != null && param.args.length > 0 && param.args[0] instanceof View) {
+                    if (param.args != null && param.args.length > 1 && param.args[0] instanceof View) {
                         View view = (View) param.args[0];
-                        protectedViews.put(new WeakReference<>(view), true);
+                        
+                        // 获取LayoutParams判断窗口类型
+                        WindowManager.LayoutParams params = null;
+                        if (param.args[1] instanceof WindowManager.LayoutParams) {
+                            params = (WindowManager.LayoutParams) param.args[1];
+                        }
+                        
+                        // 只保护应用主窗口（TYPE_APPLICATION），不保护悬浮窗
+                        if (params != null && params.type == WindowManager.LayoutParams.TYPE_APPLICATION) {
+                            // 检查是否属于目标应用
+                            android.content.Context context = view.getContext();
+                            if (context != null && TARGET_PACKAGES.contains(context.getPackageName())) {
+                                protectedViews.put(new WeakReference<>(view), true);
+                                logOnce(context.getPackageName(), "保护应用窗口: " + view.getClass().getSimpleName());
+                            }
+                        } else if (params != null) {
+                            // 悬浮窗或其他类型窗口不保护，打印日志用于调试
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                // 可选：打印调试日志，正式版可以注释掉
+                                // XposedBridge.log(TAG + " 跳过保护: 窗口类型=" + params.type + " View=" + view.getClass().getSimpleName());
+                            }
+                        }
                     }
                 }
             });
@@ -180,7 +201,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 }
             });
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+            XposedBridge.log(TAG + " Hook WindowManagerGlobal 失败: " + ignored.getMessage());
+        }
     }
 
     private void hookViewRootImpl(final XC_LoadPackage.LoadPackageParam lpparam) {
@@ -215,7 +238,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     handleSecure(vri, lpparam.classLoader);
                 }
             });
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+            XposedBridge.log(TAG + " Hook ViewRootImpl 失败: " + ignored.getMessage());
+        }
     }
 
     private void handleDimming(Object vri) {
@@ -226,6 +251,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 lp.flags &= ~WindowManager.LayoutParams.FLAG_DIM_BEHIND;
                 lp.dimAmount = 0f;
                 dimHandled.put(vri, true);
+                XposedBridge.log(TAG + " 移除背景变暗效果");
             }
         } catch (Throwable ignored) {}
     }
@@ -257,6 +283,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
 
             XposedHelpers.callMethod(txn, "apply");
+            XposedBridge.log(TAG + " 设置防截图保护");
         } catch (Throwable ignored) {}
     }
 
